@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# decompiler output and compiled scripts (keep the bundled example)
+*.asm
+*.amx
+!examples/welcome.amx

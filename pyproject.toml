@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amx2pwn"
+version = "1.0.0"
+description = "Experimental decompiler for compiled Pawn (.amx) scripts, aimed at SA-MP / open.mp"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Disassemblers",
+]
+
+[project.scripts]
+amx2pwn = "amx2pwn.cli:main"
+
+[tool.setuptools]
+packages = ["amx2pwn", "amx2pwn.render"]
