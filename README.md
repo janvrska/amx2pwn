@@ -110,32 +110,32 @@ with `pawncc` without `a_samp.inc` or `float.inc`.
 
 ## How well does it work?
 
-It was tested on 17 real SA-MP scripts, about 2,000 functions in total, ranging
-from tiny filterscripts to 300-function gamemodes:
+It was tested on a private archive of 332 distinct `.amx` files from around
+2008–2013: filterscripts, gamemodes up to 2.4 MB and compiled includes.
+Every output was compiled with `pawncc` 3.10.10.
 
-- Every output compiles with `pawncc` 3.10.10 with **0 errors**. Warnings
-  remain, mostly about unused variables and parameters that were in the
-  original code.
-- **Round trip:** each output was compiled again, decompiled again and
-  compared with the first output. About 99% of functions come back with the
-  same structure. In the rest, the operands of a comparison are swapped, the
-  branches of a `?:` are in the other order, or a temporary variable is left
-  over. None of the differences we checked changed behaviour.
-- Even the largest script takes under 3 seconds to decompile.
-
-A second, broader check ran over a private archive of 332 distinct `.amx`
-files from the same era (filterscripts, gamemodes up to 2.4 MB, compiled
-includes). 309 of them decompile into source that compiles with 0 errors.
-Of the rest:
-
-- 9 are compiled includes with no functions at all;
-- 10 are damaged or not AMX files at all (truncated, run through a text
-  conversion, or encrypted);
-- 2 rely on YSI, whose hand-written `#emit` code jumps to computed
-  addresses;
-- 2 use constructs that can't be written without the original `enum`
-  declarations or that the decompiler doesn't recognise yet (an `enum`-indexed
-  sub-array assignment and a ragged 3D string array).
+- **309 of 332** decompile into source that compiles with **0 errors**.
+  Warnings remain, mostly about unused variables and parameters that were in
+  the original code.
+- The other 23:
+  - 10 are damaged or not AMX files at all (truncated, run through a text
+    conversion, or encrypted);
+  - 9 are compiled includes without any public function, so there is nothing
+    to compile them into (8 of them are empty);
+  - 2 rely on YSI, whose hand-written `#emit` code jumps to computed
+    addresses;
+  - 2 use constructs that can't be written without the original `enum`
+    declarations or that the decompiler doesn't recognise yet (an
+    `enum`-indexed sub-array assignment and a ragged 3D string array).
+- **Round trip:** 17 of the scripts (about 2,000 functions, from tiny
+  filterscripts to 300-function gamemodes) were also compiled again,
+  decompiled again and compared with the first output. About 99% of functions
+  come back with the same structure. In the rest, the operands of a
+  comparison are swapped, the branches of a `?:` are in the other order, or a
+  temporary variable is left over. None of the differences we checked changed
+  behaviour.
+- **Speed:** a typical script takes a second or less; the largest 2.4 MB
+  gamemodes take about 12 seconds.
 
 What it does **not** do:
 
