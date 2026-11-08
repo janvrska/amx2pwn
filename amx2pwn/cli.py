@@ -25,6 +25,8 @@ def process(path, outpath=None, asm=True, shift=None, enc="latin-1", mode="pwn",
     """Decompile one .amx file into a .pwn file (and an .asm listing)."""
     raw = open(path, "rb").read()
     amx = Amx(raw, shift)
+    for w in amx.warnings:
+        print("  warning: " + w)
     base = os.path.splitext(outpath or path)[0]
     pwn = outpath or base + ".pwn"
     if not force and not is_own_output(pwn):

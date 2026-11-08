@@ -1,5 +1,6 @@
 """Float: tag inference and float operator templates."""
 
+from ..natives import CORE
 from ..nodes import (
     AddrOf, Assign, Bin, Call, CharAt, CMP_OPS, Const, Elem, FLOAT_NATIVES, FOPS, G, HeapTmp,
     IA, L, N, PostInc, Prm, Raw, Row, subst, Tern, Un,
@@ -232,6 +233,21 @@ class FloatsMixin:
             return loc.size if loc is not None else 0
         return 0
 
+    def native_out_args(self, name):
+        """Positions of the array arguments a native writes into."""
+        if name in CORE:
+            decl = CORE[name]["decl"]
+            params = decl[decl.index("(") + 1:decl.rindex(")")].split(",")
+            return [i for i, p in enumerate(params) if "[" in p and not p.strip().startswith("const")]
+        if name in self.d.natdb:
+            # SA-MP style: an array followed by its length (GetPlayerName(playerid, name, len))
+            letters = self.d.natdb[name][0]
+            names = self.d.nat_argnames.get(name, [])
+            return [i for i, t in enumerate(letters)
+                    if t == "s" and i + 1 < len(letters) and letters[i + 1] == "i"
+                    and i + 1 < len(names) and any(w in names[i + 1].lower() for w in ("len", "size", "max"))]
+        return []
+
     def infer_const(self):
         """An array parameter is const when the function neither writes to it nor passes it on for writing."""
         d = self.d
@@ -265,6 +281,13 @@ class FloatsMixin:
                 pm = base_prm(e.t)
                 if pm is not None:
                     nonconst.add((id(pm.f), pm.k))
+            if isinstance(e, Call) and e.native:
+                # natives that write into an array argument (strmid dest, GetPlayerName name, ...)
+                for i in self.native_out_args(e.name):
+                    if i < len(e.args):
+                        pm = base_prm(e.args[i])
+                        if pm is not None:
+                            nonconst.add((id(pm.f), pm.k))
             if isinstance(e, Call) and not e.native and e.faddr in d.fby:
                 for i, x in enumerate(e.args):
                     pm = base_prm(x)

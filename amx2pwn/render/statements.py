@@ -33,7 +33,7 @@ class StatementsMixin:
                     and 0 <= s.init.v < len(self.d.a.data) and s.init.v % self.C == 0:
                 b0 = s.init.v // self.C
                 hv = [self.d.a.sval(x) for x in self.d.a.data_cells[b0:b0 + s.init_n // self.C]]
-                if self.local_2d(s.loc, hv):
+                if self.local_2d(s.loc, hv) or self.local_ragged(s.loc, hv):
                     s.loc.dims = None
                     self.lit2d = True
             if s.arr and isinstance(s.init, Const) and (not self.is_literal(s.init) or getattr(self, "lit2d", False)) \
@@ -49,6 +49,10 @@ class StatementsMixin:
                     body = vals[rows:] + [0] * (rows * cols - len(vals[rows:]))
                     rs = [self.init1(body[r * cols:(r + 1) * cols])[3:] or "{0}" for r in range(rows)]
                     w("%snew %s%s[%d][%d] = {%s};\n" % (I, self.ltag(s.loc), s.loc.name, rows, cols, ", ".join(rs)))
+                    return
+                rag = self.local_ragged(s.loc, vals)
+                if rag:
+                    w("%snew %s%s[%d][] = {%s};\n" % (I, self.ltag(s.loc), s.loc.name, len(rag), ", ".join(rag)))
                     return
                 while vals and vals[-1] == 0:
                     vals.pop()
@@ -158,7 +162,7 @@ class StatementsMixin:
 
     def decl_str(self, s):
         loc = s.loc
-        name = loc.name if loc.size == 1 else "%s[%d]" % (loc.name, loc.size)
+        name = loc.name if loc.size == 1 and not loc.arr1 else "%s[%d]" % (loc.name, loc.size)
         name = self.ltag(loc) + name
         if s.init is None:
             return "new %s" % name
@@ -167,4 +171,6 @@ class StatementsMixin:
         if s.arr:
             return "new %s = %s" % (name, self.arr(s.init))
         f = self.ltag(loc) or self.floatish(s.init)
+        if loc.arr1:
+            return "new %s = {%s}" % (name, self.r(s.init, 0, "f" if f else "v"))
         return "new %s = %s" % (name, self.r(s.init, 2, "f" if f else "v"))

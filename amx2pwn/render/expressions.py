@@ -36,7 +36,9 @@ class ExpressionsMixin:
         if isinstance(e, Prm):
             return self.pname(e.f, e.k)
         if isinstance(e, L):
-            return e.loc.name if e.k is None else "%s[%d]" % (e.loc.name, e.k)
+            if e.k is None:
+                return e.loc.name + ("[0]" if e.loc.arr1 else "")
+            return "%s[%d]" % (e.loc.name, e.k)
         if isinstance(e, AddrOf):
             return self.r(e.t, prec)
         if isinstance(e, (IA, Elem)):
@@ -87,16 +89,18 @@ class ExpressionsMixin:
             p = PREC[e.op]
             # integer operation on a Float value: keep the _: tag so the meaning is unchanged and visible
             cast = e.op in OVL_OPS and (self.ftag(e.a) or self.ftag(e.b))
-            la = self.ia_cast(e.a, p, cast)
-            if e.op in ("&&", "||", "+", "*", "&", "|", "^") and isinstance(e.b, Bin) and e.b.op == e.op:
+            # a comparison inside a comparison is always parenthesised
+            # (each operand is rendered once: nested chains would otherwise grow exponentially)
+            if e.op in CMP_OPS and isinstance(e.a, Bin) and e.a.op in CMP_OPS:
+                la = "(%s)" % self.r(e.a)
+            else:
+                la = self.ia_cast(e.a, p, cast)
+            if e.op in CMP_OPS and isinstance(e.b, Bin) and e.b.op in CMP_OPS:
+                rb = "(%s)" % self.r(e.b)
+            elif e.op in ("&&", "||", "+", "*", "&", "|", "^") and isinstance(e.b, Bin) and e.b.op == e.op:
                 rb = self.ia_cast(e.b, p, cast)
             else:
                 rb = self.ia_cast(e.b, p + 1, cast)
-            if e.op in CMP_OPS:
-                if isinstance(e.a, Bin) and e.a.op in CMP_OPS:
-                    la = "(%s)" % self.r(e.a)
-                if isinstance(e.b, Bin) and e.b.op in CMP_OPS:
-                    rb = "(%s)" % self.r(e.b)
             s = "%s %s %s" % (la, e.op, rb)
             return s if prec <= p else "(%s)" % s
         if isinstance(e, Tern):
@@ -159,6 +163,9 @@ class ExpressionsMixin:
 
     def arr(self, e, lit=True):
         d = self.d
+        if isinstance(e, Tern):
+            # cond ? "text" : array  - both branches are arrays
+            return "(%s ? %s : %s)" % (self.r(e.c, 4), self.arr(e.a, lit), self.arr(e.b, lit))
         if isinstance(e, Bin) and e.op == "+" and isinstance(e.b, Const) and e.b.v % self.C == 0 \
                 and isinstance(e.a, (Prm, AddrOf, Row, Const)):
             return "%s[%d]" % (self.arr(e.a, False), e.b.v // self.C)
@@ -201,6 +208,8 @@ class ExpressionsMixin:
 
     def ref(self, e, variadic):
         d = self.d
+        if isinstance(e, Tern) and (self.looks_array(e.a) or self.looks_array(e.b)):
+            return self.arr(e)
         if isinstance(e, Bin) and e.op == "+" and isinstance(e.b, Const) and e.b.v % self.C == 0 \
                 and isinstance(e.a, (Prm, AddrOf, Row, Const)):
             return self.arr(e)
@@ -229,6 +238,9 @@ class ExpressionsMixin:
         if isinstance(e, Prm):
             return self.pname(e.f, e.k)
         if isinstance(e, Row):
+            if variadic:
+                # a row of a 2D array as a variadic argument (e.g. %s): just g[i]
+                return self.r(e)
             # reference to the first cell of a 2D array row: g[i] -> g[i][0]
             return self.r(e) + "[0]"
         if isinstance(e, IA):
@@ -247,6 +259,9 @@ class ExpressionsMixin:
                 fi.pkind[i] = "a"
                 self.marks_changed = True
                 m = "a"
+            if m == "a" and isinstance(x, AddrOf) and isinstance(x.t, L) and x.t.loc.size == 1                     and not x.t.loc.arr1:
+                x.t.loc.arr1 = True
+                self.marks_changed = True
             args.append(self.r(x, 0, m))
         args = self.nice_args(c, args)
         return "%s(%s)" % (c.name, ", ".join(args))
@@ -335,6 +350,8 @@ class ExpressionsMixin:
             return self.nat_inf[name]
         d = self.d
         modes = {}
+        weak = set()      # positions where the only array evidence is a constant that looks like a string address
+        byval = set()     # positions where some call clearly passes a plain value
         counts = d.arg_counts.get(name, set())
         for c in self.calls_by_native.get(name, []):
             for i, x in enumerate(c.args):
@@ -342,7 +359,10 @@ class ExpressionsMixin:
                 if isinstance(x, HeapTmp):
                     k = "va"
                 elif isinstance(x, Const) and x.v in d.strings and x.v >= 0x100:
-                    k = "a"
+                    weak.add(i)
+                    continue
+                elif isinstance(x, Const):
+                    byval.add(i)
                 elif isinstance(x, AddrOf):
                     k = "a" if isinstance(x.t, L) and x.t.loc.size > 1 else "r"
                 elif isinstance(x, Prm) and x.f.pkind.get(x.k) in ("a", "r"):
@@ -351,6 +371,8 @@ class ExpressionsMixin:
                     k = "a"
                 if k and modes.get(i) != "va":
                     modes[i] = k
+        for i in weak - byval:
+            modes.setdefault(i, "a")
         n = max(counts) if counts else 0
         out = [modes.get(i, "v") for i in range(n)]
         if len(counts) > 1:

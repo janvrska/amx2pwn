@@ -323,11 +323,12 @@ class Path:
 
 # ---------------------------- statements -----------------------------------
 class Local:
-    __slots__ = ("name", "size", "dims")
+    __slots__ = ("name", "size", "dims", "arr1")
 
     def __init__(self, name, size):
         self.name, self.size = name, size
         self.dims = None
+        self.arr1 = False     # size 1 but used as an array: declared as name[1]
 
 
 class Item:
@@ -338,11 +339,14 @@ class Item:
 
 
 class State:
-    __slots__ = ("pri", "alt", "stk", "sp", "fx", "frozen")
+    __slots__ = ("pri", "alt", "stk", "sp", "fx", "frozen", "skew")
+
+    def __init__(self):
+        self.skew = 0     # bytes of arguments a call claimed but never pushed
 
     def copy(self, freeze=False):
         s = State()
-        s.pri, s.alt, s.sp = self.pri, self.alt, self.sp
+        s.pri, s.alt, s.sp, s.skew = self.pri, self.alt, self.sp, self.skew
         s.stk = list(self.stk)
         s.fx = [] if freeze else list(self.fx)
         s.frozen = len(self.stk) if freeze else self.frozen
@@ -360,6 +364,7 @@ class FuncInfo:
         self.addr, self.name, self.public = addr, name, public
         self.nparams = 0
         self.pkind = {}       # k -> 'a' (array) | 'r' (reference)
+        self.psize = {}       # k -> declared size of an array parameter (when it is copied whole)
         self.pnames = {}
         self.body = []
         self.ret_value = False

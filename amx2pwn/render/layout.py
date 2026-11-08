@@ -2,7 +2,8 @@
 
 import bisect
 
-from ..nodes import AddrOf, Const, Elem, G, L, Prm, Row
+from ..literals import pawn_str
+from ..nodes import AddrOf, Const, Elem, G, L, N, Prm, Row, iter_nodes, stmt_roots
 
 
 class LayoutMixin:
@@ -72,6 +73,30 @@ class LayoutMixin:
         loc.dims = (rows, cols)
         return rows, cols
 
+    def local_ragged(self, loc, vals):
+        """Local 2D array with rows of different length, e.g. new reasons[][] = {"Quit", "Kick"}.
+        Returns the rows as Pawn strings, or None."""
+        C = self.C
+        if not vals or vals[0] % C or vals[0] <= C:
+            return None
+        rows = vals[0] // C
+        if rows >= len(vals):
+            return None
+        starts = [vals[r] // C + r for r in range(rows)] + [loc.size]
+        if starts[0] != rows or any(starts[r + 1] <= starts[r] for r in range(rows)):
+            return None
+        out = []
+        for r in range(rows):
+            cells = vals[starts[r]:starts[r + 1]]
+            k = 0
+            while k < len(cells) and cells[k] and (32 <= cells[k] < 256 or cells[k] in (9, 10, 13)):
+                k += 1
+            if any(cells[k:]) or (r < rows - 1 and k >= len(cells)):
+                return None
+            out.append(pawn_str("".join(chr(v) for v in cells[:k])))
+        loc.dims = (rows, 0)
+        return out
+
     def mark_row(self, e):
         """X[0][i]: row 0 of a 2D array is read straight from the header (G) - the start of the array."""
         if isinstance(e.x, G) and not self.layout_ready:
@@ -139,6 +164,11 @@ class LayoutMixin:
         d = self.d
         for fi in d.funcs:
             fi.pdims = {}
+            # arg[i][j] inside the function itself: a 2D parameter even without callers
+            for e in self._body_nodes(fi.body):
+                if isinstance(e, Row) and isinstance(e.x, Elem) and isinstance(e.x.ia.base, Prm) \
+                        and e.x.ia.base.f is fi:
+                    fi.pdims[e.x.ia.base.k] = max(fi.pdims.get(e.x.ia.base.k, 1), 2)
         for _ in range(4):
             changed = False
             for c in self.all_calls:
@@ -154,6 +184,26 @@ class LayoutMixin:
                         changed = True
             if not changed:
                 break
+
+    @staticmethod
+    def _body_nodes(stmts):
+        """All expression nodes of a statement list."""
+        todo = list(stmts)
+        while todo:
+            s = todo.pop()
+            if s is None:
+                continue
+            for root in stmt_roots(s):
+                yield from iter_nodes(root)
+            for sub in ("then", "els", "body", "inc"):
+                v = getattr(s, sub, None)
+                if isinstance(v, list):
+                    todo.extend(v)
+            if s.kind == "for" and getattr(s, "init", None) is not None and not isinstance(s.init, N):
+                todo.append(s.init)
+            if s.kind == "switch":
+                for _, _, b in s.cases:
+                    todo.extend(b)
 
     def ragged_pos(self, inf, k):
         k -= inf[1]
@@ -199,8 +249,6 @@ class LayoutMixin:
             return self.gname(addr)
         k = (addr - own) // self.C
         inf = self.ginfo[own]
-        if k == 0 and inf[0] == "1d" and inf[1] == 1:
-            return self.gname(own)
         if inf[0] == "2dr":
             if k < inf[1]:
                 return "%s[%d]" % (self.gname(own), k)

@@ -123,15 +123,34 @@ from tiny filterscripts to 300-function gamemodes:
   over. None of the differences we checked changed behaviour.
 - Even the largest script takes under 3 seconds to decompile.
 
+A second, broader check ran over a private archive of 332 distinct `.amx`
+files from the same era (filterscripts, gamemodes up to 2.4 MB, compiled
+includes). 309 of them decompile into source that compiles with 0 errors.
+Of the rest:
+
+- 9 are compiled includes with no functions at all;
+- 10 are damaged or not AMX files at all (truncated, run through a text
+  conversion, or encrypted);
+- 2 rely on YSI, whose hand-written `#emit` code jumps to computed
+  addresses;
+- 2 use constructs that can't be written without the original `enum`
+  declarations or that the decompiler doesn't recognise yet (an `enum`-indexed
+  sub-array assignment and a ragged 3D string array).
+
 What it does **not** do:
 
 - **Comments, macros, `#define`s, `enum` names** and **original names** can't
   come back without debug info, because the compiler throws them away.
 - **`goto` and odd control flow:** code the compiler produced from `goto` or
   unusual jumps can come out as `goto` / labels or as `#emit` blocks.
-- **Unusual compiler or plugin tricks** may fail. A function that can't be
-  decompiled is written as a comment that points to the `.asm` listing, and
-  the rest of the file is still produced.
+- **Hand-written `#emit` code** that reads the return address, changes the
+  stack or jumps to computed addresses (as YSI does) has no plain Pawn
+  equivalent. Such a function is written as a comment that points to the
+  `.asm` listing, and the rest of the file is still produced.
+- **Anti-decompiler tricks** from the SA-MP days are handled where the code is
+  still valid: calls with missing arguments, memory accesses outside the data
+  section (kept as `#emit`), calls into code that is not a function (an empty
+  stub is declared). A damaged file is reported, not guessed at.
 
 ## Code layout
 

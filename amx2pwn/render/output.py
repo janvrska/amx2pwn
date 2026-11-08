@@ -9,6 +9,14 @@ from ..natives import CORE, ENUMS, NATIVE_PNAMES
 from ..nodes import AddrOf, Assign, Call, Const, N, Prm, S
 
 
+def strip_zeros(vals):
+    """vals without the trailing zeros."""
+    n = len(vals)
+    while n and vals[n - 1] == 0:
+        n -= 1
+    return vals[:n]
+
+
 class OutputMixin:
     """Whole-file rendering: naming passes, declarations, globals."""
 
@@ -82,6 +90,22 @@ class OutputMixin:
                 w("forward %s%s(%s);\n" % ("Float:" if fi in self.float_ret else "", fi.name, self.params(fi)))
         w("\n")
         w(body.getvalue())
+        self.write_call_stubs(w)
+
+    def write_call_stubs(self, w):
+        """Calls into code that is not a normal function (no 'proc' there, typically an
+        anti-decompiler trick): declare an empty function so the output still compiles."""
+        nargs = {}
+        for c in self.all_calls:
+            if not c.native and c.faddr not in self.d.fby:
+                nargs.setdefault((c.faddr, c.name), set()).add(len(c.args))
+        for (addr, name), cnts in sorted(nargs.items()):
+            ps = ", ".join("arg%d" % i for i in range(max(cnts)))
+            w("// The code at 0x%X is not a normal function (see the .asm listing).\n" % addr)
+            w("stock %s(%s)\n{\n" % (name, ps))
+            if ps:
+                w("    #pragma unused %s\n" % ps)
+            w("    return 0;\n}\n\n")
 
     def auto_names(self, calls):
         """Name functions after dcmd(...) and parameters after how natives use them."""
@@ -254,7 +278,10 @@ class OutputMixin:
                     and not (fi.public and fi.name in self.d.cbdb):
                 nm = "const " + nm
             dims = getattr(fi, "pdims", {}).get(k, 1)
-            ps.append(("%s%s" % (nm, "[]" * dims)) if kd == "a" else ("&%s" % nm) if kd == "r" else nm)
+            if kd == "a" and dims == 1 and fi.psize.get(k):
+                ps.append("%s[%d]" % (nm, fi.psize[k]))
+            else:
+                ps.append(("%s%s" % (nm, "[]" * dims)) if kd == "a" else ("&%s" % nm) if kd == "r" else nm)
         if n < fi.nparams or self.variadic(fi):
             ps.append("...")
         return ", ".join(ps)
@@ -277,6 +304,12 @@ class OutputMixin:
 
     def write_natives(self, w):
         d = self.d
+        # core declarations such as fopen(..., filemode:mode=io_readwrite) need their enum too
+        for name in d.native_names:
+            if self.core_ok(name):
+                for en in ENUMS:
+                    if en + ":" in CORE[name]["decl"]:
+                        self.enums_used.add(en)
         if self.enums_used:
             w("// ---------------------------------------------------------- constants (as in file.inc/float.inc)\n")
             for en in ("filemode", "seek_whence", "floatround_method", "anglemode"):
@@ -418,15 +451,39 @@ class OutputMixin:
         if not any(vals):
             return ""
         if isf:
-            while vals and vals[-1] == 0:
-                vals = vals[:-1]
+            vals = strip_zeros(vals)
             return " = {%s}" % ", ".join(self.r(Const(v), 0, "f") for v in vals)
         # string?
         k = 0
         while k < len(vals) and vals[k] and (32 <= vals[k] < 256 or vals[k] in (9, 10, 13)):
             k += 1
-        if k > 0 and not any(vals[k:]):
+        if 0 < k < len(vals) and not any(vals[k:]):
+            # (a string needs room for its terminating zero)
             return " = " + pawn_str("".join(chr(v) for v in vals[:k]))
-        while vals and vals[-1] == 0:
-            vals = vals[:-1]
-        return " = {%s}" % ", ".join(self.r(Const(v)) for v in vals)
+        # a long run of one value up to the end: {..., x, x, ...} (Pawn repeats the last value)
+        run = 1
+        while run < len(vals) and vals[-run - 1] == vals[-1]:
+            run += 1
+        if vals[-1] != 0 and run >= 4:
+            head = vals[:len(vals) - run]
+            items = [self.r(Const(v)) for v in head] + [self.r(Const(vals[-1]))] * (1 if not head else 2)
+            return " = {%s, ...}" % self.join_wrapped(items)
+        vals = strip_zeros(vals)
+        return " = {%s}" % self.join_wrapped([self.r(Const(v)) for v in vals])
+
+    @staticmethod
+    def join_wrapped(items, width=1000):
+        """Join initializer items, breaking the line before pawncc's line length limit."""
+        s = ", ".join(items)
+        if len(s) <= width:
+            return s
+        lines, cur = [], []
+        n = 0
+        for it in items:
+            if cur and n + len(it) > width:
+                lines.append(", ".join(cur))
+                cur, n = [], 0
+            cur.append(it)
+            n += len(it) + 2
+        lines.append(", ".join(cur))
+        return ",\n    ".join(lines)

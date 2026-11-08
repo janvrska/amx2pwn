@@ -24,10 +24,17 @@ class Amx:
     def __init__(self, raw, shift=None):
         self.raw = raw
         self.forced_shift = shift
+        self.warnings = []
         self._parse_header()
-        self._load_image()
-        self._parse_tables()
-        self._parse_debug()
+        try:
+            self._load_image()
+            self._parse_tables()
+            self._parse_debug()
+        except (struct.error, ValueError, IndexError, OverflowError) as e:
+            msg = "the file is damaged (%s)" % e
+            if self.warnings:
+                msg = "%s; %s" % (self.warnings[0], msg)
+            raise AmxError(msg)
 
     # ---------------- header ----------------
     def _parse_header(self):
@@ -37,6 +44,8 @@ class Amx:
         self.size, self.magic = struct.unpack_from("<iH", r, 0)
         cellsizes = {0xF1E0: 4, 0xF1E1: 8, 0xF1E2: 2}
         if self.magic not in cellsizes:
+            if all(32 <= b < 127 or b in (9, 10, 13) for b in r[:64]):
+                raise AmxError("this is a text file, not a compiled .amx")
             raise AmxError("unknown magic 0x%04X (not an AMX file?)" % self.magic)
         self.cell = cellsizes[self.magic]
         self.cfmt = {2: "h", 4: "i", 8: "q"}[self.cell]
@@ -49,7 +58,11 @@ class Amx:
         if self.file_version < 7:
             self.nametable = None   # older format: names stored inline in the tables
         if self.size > len(r):
-            raise AmxError("header says the size is %d, but the file has only %d bytes" % (self.size, len(r)))
+            # Truncated file or a patched header (an old anti-decompiler trick).
+            # Carry on with what is there; _load_image checks that the code is complete.
+            self.warnings.append("header says the size is %d, but the file has only %d bytes"
+                                 % (self.size, len(r)))
+            self.size = len(r)
 
     def sval(self, v):
         """unsigned -> signed cell"""

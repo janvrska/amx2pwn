@@ -11,7 +11,15 @@ from .nodes import (
 )
 
 
+# Placeholder for a value popped from an empty simulated stack.
+MISSING = Raw("/*pop*/0")
+# The frame pointer (lctrl 5).
+FRAME = Raw("/* lctrl 5 */ 0")
+
 class Decompiler:
+    # instructions whose operand is the address of a global variable
+    GLOBAL_OPS = {"load.pri", "load.alt", "stor.pri", "stor.alt", "lref.pri", "lref.alt",
+                  "sref.pri", "sref.alt", "inc", "dec", "zero"}
     JCOND = {"jzer", "jnz", "jeq", "jneq", "jless", "jleq", "jgrtr", "jgeq",
              "jsless", "jsleq", "jsgrtr", "jsgeq"}
     JOP = {"jeq": "==", "jneq": "!=", "jless": "<", "jleq": "<=", "jgrtr": ">", "jgeq": ">=",
@@ -183,6 +191,9 @@ class Decompiler:
         offs, gaddrs = set(), set()
         if isinstance(e, AddrOf) and isinstance(e.t, L) and e.t.loc.size > 1:
             ok = True
+        elif isinstance(e, Const):
+            # e.g. a global array address kept for a chained assignment: a[0] = b[0] = -1
+            ok = True
         elif isinstance(e, Prm):
             ok = (3 + e.k) * self.C not in self.cur_written
         elif isinstance(e, (IA, Row)):
@@ -246,7 +257,7 @@ class Decompiler:
     def pop(self, st):
         st.sp += self.C
         if not st.stk:
-            return Raw("/*pop*/0")
+            return MISSING
         it = st.stk.pop()
         if len(st.stk) < st.frozen:
             st.frozen = len(st.stk)
@@ -268,6 +279,10 @@ class Decompiler:
                     self.declare(st, it, out, it.expr)
                 k = (off - it.off) // C
                 return L(it.local, None if it.local.size == 1 else k)
+        if not self.tentative:
+            # frame header (saved frame, return address, argument count) or an unallocated
+            # slot: only #emit code does this, and plain Pawn cannot express it
+            raise ValueError("stack frame access at offset %d (#emit code)" % off)
         return Raw("frm_%d" % (-off))
 
     def store_frame(self, st, out, off, v):
@@ -302,6 +317,14 @@ class Decompiler:
     def deref(self, e):
         if isinstance(e, IA):
             return Elem(e)
+        if isinstance(e, Bin) and e.op == "+":
+            # (index << 2) + array: the compiler scaled the index itself -> array[index]
+            shift = {2: 1, 4: 2, 8: 3}[self.C]
+            for x, y in ((e.a, e.b), (e.b, e.a)):
+                if isinstance(x, Bin) and x.op == "<<" and isinstance(x.b, Const) and x.b.v == shift \
+                        and self.array_base(y):
+                    self.mark_base(y)
+                    return Elem(IA(y, x.a))
         if isinstance(e, Bin) and e.op in ("+", "-") and isinstance(e.b, Const) and e.b.v % self.C == 0 \
                 and isinstance(e.a, (Prm, AddrOf, Row)):
             self.mark_base(e.a)
@@ -345,6 +368,14 @@ class Decompiler:
                  "align.pri", "align.alt", "sign.pri", "sign.alt", "proc"):
             if n == "bounds":
                 self.last_bounds = o
+            return
+        if n in self.GLOBAL_OPS and not 0 <= o < len(self.a.data):
+            # an address outside the data section (anti-decompiler #emit trick): keep it as #emit
+            self.emit(st, out, S("emit", text="#emit %s %d" % (n, o)))
+            if n in ("load.pri", "lref.pri"):
+                st.pri = Raw("0 /* pri from #emit */")
+            elif n in ("load.alt", "lref.alt"):
+                st.alt = Raw("0 /* alt from #emit */")
             return
         if n == "load.pri":
             self.g_scalar.add(o); st.pri = G(o)
@@ -458,6 +489,9 @@ class Decompiler:
         elif n == "pop.alt":
             st.alt = self.pop(st)
         elif n == "stack":
+            if o > 0 and st.skew:
+                # the call before claimed more arguments than were pushed (see do_call)
+                o, st.skew = max(0, o - st.skew), 0
             st.sp += o
             if o < 0:
                 st.stk.append(Item(st.sp, None, -o // C))
@@ -565,11 +599,28 @@ class Decompiler:
             st.pri, st.alt = G(ops[0]), G(ops[1])
         elif n == "load.s.both":
             st.pri, st.alt = self.frame(st, out, ops[0]), self.frame(st, out, ops[1])
+        elif n == "lctrl" and o == 5:
+            # frame pointer: the compiler itself uses 'lctrl 5; [add.c -n;] sctrl 4'
+            # to reset the stack inside loops
+            st.pri = FRAME
+        elif n == "sctrl" and o == 4 and self.frame_based(st.pri):
+            pass
+        elif n in ("lctrl", "sctrl") and o in (4, 5, 6) and not self.tentative:
+            # reading/changing the stack, frame or code pointer: hand-written #emit code
+            # (e.g. YSI hooks jumping to computed addresses) that plain Pawn cannot express
+            raise ValueError("%s %d (#emit code that changes the stack or jumps)" % (n, o))
         elif n in ("lctrl",):
             st.pri = Raw("/* lctrl %d */ 0" % o)
         else:
             # everything else (sctrl, jump.pri, call.pri, halt, cmps, sysreq.pri ...) as #emit
             self.emit(st, out, S("emit", text="#emit %s %s" % (n, " ".join(str(x) for x in ops))))
+
+    @staticmethod
+    def frame_based(e):
+        """FRAME, or FRAME plus/minus a constant."""
+        if e is FRAME:
+            return True
+        return isinstance(e, Bin) and e.op in ("+", "-") and e.a is FRAME and isinstance(e.b, Const)
 
     def note_bounds(self, base):
         b = getattr(self, "last_bounds", None)
@@ -580,12 +631,25 @@ class Decompiler:
     def add(self, p, a):
         if isinstance(p, Const) and isinstance(a, Const):
             return Const(p.v + a.v)
+        shift = {2: 1, 4: 2, 8: 3}[self.C]
+        for x, y in ((p, a), (a, p)):
+            # (index << 2) + array: the compiler scaled the index itself -> address of array[index]
+            if isinstance(x, Bin) and x.op == "<<" and isinstance(x.b, Const) and x.b.v == shift \
+                    and (isinstance(y, (AddrOf, Prm)) or self.array_base(y, strong=True)):
+                if isinstance(y, Prm):
+                    self.cur.pkind.setdefault(y.k, "a")
+                self.mark_base(y)
+                return IA(y, x.a)
         for x, y in ((p, a), (a, p)):
             if isinstance(y, Const) and y.v % self.C == 0 and (
                     isinstance(x, Row) or (isinstance(x, AddrOf) and isinstance(x.t, L) and x.t.loc.size > 1)):
                 return IA(x, Const(y.v // self.C))
         for x, y in ((p, a), (a, p)):
             if isinstance(x, Elem) and y is x.ia:
+                return Row(x)
+            # 3D array with a constant 0 middle index: g[i] row header + g[i] -> g[i][0]
+            if isinstance(x, Elem) and isinstance(y, Row) and x.ia.base is y \
+                    and isinstance(x.ia.idx, Const) and x.ia.idx.v == 0:
                 return Row(x)
             # row 0 of an array parameter: arg[0] (header) + arg
             if isinstance(x, Elem) and isinstance(y, Prm) and isinstance(x.ia.base, Prm) \
@@ -603,15 +667,34 @@ class Decompiler:
             return Bin("-", p, Const(-a.v))
         return Bin("+", p, a)
 
+    def array_base(self, e, strong=False):
+        """Can this expression be the address of an array? (strong: it surely is)"""
+        if isinstance(e, Const):
+            return e.v % self.C == 0 and 0 <= e.v < len(self.a.data) and \
+                (not strong or e.v >= 256 or e.v in self.g_arr)
+        if isinstance(e, Prm):
+            return not strong and e.f.pkind.get(e.k) == "a"
+        return isinstance(e, (AddrOf, Row, IA))
+
     def char_at(self, e):
         if isinstance(e, Bin) and e.op == "+":
-            self.mark_base(e.a)
-            return CharAt(e.a, e.b)
+            base, idx = e.a, e.b
+            if (self.array_base(idx, strong=True) and not self.array_base(base)) or \
+                    (isinstance(idx, Prm) and not isinstance(base, Prm) and not self.array_base(base)):
+                # index + array (the compiler loaded the index first): arr{index}
+                base, idx = idx, base
+            self.mark_base(base)
+            return CharAt(base, idx)
         self.mark_base(e)
         return CharAt(e, Const(0))
 
     def movs(self, st, out, nbytes):
         dst, src = st.alt, st.pri
+        for x in (dst, src):
+            # a whole global array is copied: that is its size
+            if isinstance(x, Const) and x.v % self.C == 0 and 0 <= x.v < len(self.a.data) \
+                    and not (x is src and (isinstance(dst, HeapTmp) or x.v in self.strings)):
+                self.g_arr[x.v] = max(self.g_arr.get(x.v, 0), nbytes // self.C)
         if isinstance(dst, HeapTmp):
             self.use(st, src)
             dst.content = src
@@ -623,24 +706,43 @@ class Decompiler:
             out[-1].arr = True
             out[-1].init_n = nbytes
             return
+        if isinstance(src, Prm) and src.f is self.cur:
+            # copying a whole array parameter: it was declared with a fixed size, arg[n]
+            self.cur.psize[src.k] = max(self.cur.psize.get(src.k, 0), nbytes // self.C)
         self.emit(st, out, S("expr", e=Assign(dst, src, True)), [src, dst])
 
     def do_call(self, st, out, o, native, nbytes=None):
         C = self.C
+        sysreq_c = native and nbytes is None
         if nbytes is None:
             cnt = self.pop(st)
             nbytes = cnt.v if isinstance(cnt, Const) else 0
         nargs = max(0, nbytes // C)
-        args = [self.pop(st) for _ in range(nargs)]
+        # Calls with too few arguments (an old anti-DeAMX trick, or a plain mistake):
+        # the compiler still pushes the full argument count. Stop at the first value
+        # that was not pushed for this call - a local variable of the function - and
+        # drop the missing arguments; pawncc accepts such a call with a warning.
+        args = []
+        for i in range(nargs):
+            if st.stk and st.stk[-1].local is not None:
+                if sysreq_c:
+                    # the 'stack' cleanup after the call also counts the missing arguments
+                    st.skew += (nargs - i) * C
+                break
+            args.append(self.pop(st))
+        popped = len(args)
+        while args and args[-1] is MISSING:
+            args.pop()
         if native:
-            st.sp -= (nargs + 1) * C if nbytes is not None else 0
+            st.sp -= (popped + 1) * C
             name = self.native_names[o] if 0 <= o < len(self.native_names) else "native_%d" % o
             c = Call(name, args, True)
         else:
             fi = self.fby.get(o)
             c = Call(fi.name if fi else "func_%X" % o, args, False, o)
-        self.arg_counts.setdefault(c.name, set()).add(nargs)
-        if not native and st.stk and isinstance(st.stk[-1].expr, HeapTmp) and st.stk[-1].local is None:
+        self.arg_counts.setdefault(c.name, set()).add(len(args))
+        if not native and st.stk and isinstance(st.stk[-1].expr, HeapTmp) and st.stk[-1].local is None \
+                and st.stk[-1].expr.content is None:
             st.stk[-1].expr.content = c
         st.fx.append(c)
         st.pri = c
