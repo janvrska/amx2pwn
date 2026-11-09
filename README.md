@@ -152,6 +152,36 @@ What it does **not** do:
   section (kept as `#emit`), calls into code that is not a function (an empty
   stub is declared). A damaged file is reported, not guessed at.
 
+## Comparison with other AMX decompilers
+
+| | amx2pwn | [PyDeAMX](https://github.com/najuaircrack/PyDeAMX) | [DeAMX](https://github.com/AmyrAhmady/DeAMX) |
+|---|---|---|---|
+| **Runtime** | Python 3.8+ | Python 3.10+ | Lua 5.1 |
+| **Interface** | command line | command line, GUI | command line |
+| **Needs** | only the `.amx` | the `.amx` and matching includes | only the `.amx` |
+| **AMX formats** | 16/32/64-bit, versions 1–11 | 32-bit, versions 6–11 | 32-bit, newer versions |
+| **Debug info** | used | used | ignored |
+| **Goal** | readable source | provably equivalent rebuild | readable source |
+| **Output** | one self-contained `.pwn` | `.pwn` + support include + JSON report | one `.pwn` |
+| **Built-in result check** | no | yes, with a compiler | no |
+| **Last update** | 2026 | 2026 | 2021 |
+
+On six SA-MP gamemodes from around 2008–2010, compiled with `pawncc` 3.10.10:
+
+| | amx2pwn | PyDeAMX | DeAMX |
+|---|---|---|---|
+| **Decompiled** | 6 of 6 | 6 of 6 | 5 of 6 |
+| **Functions as readable Pawn** | all | about 60% | all |
+| **Output compiles** | 6 of 6 | 0 of 6 | 0 of 5 |
+
+In short: **amx2pwn** suits older scripts and source you want to read and edit.
+**PyDeAMX** suits modern scripts when you have the original includes and want
+the tool to verify the rebuild. **DeAMX** is the original 2008 tool and a small
+code base to learn from.
+
+The [full comparison](docs/COMPARISON.md) covers control flow, floats, naming,
+libraries, licenses and the test details.
+
 ## Code layout
 
 ```
